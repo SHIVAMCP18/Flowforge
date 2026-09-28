@@ -7,13 +7,18 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 public interface TaskRunRepository extends JpaRepository<TaskRun, UUID> {
 
-    List<TaskRun> findByWorkflowRunId(UUID workflowRunId);
+    List<TaskRun> findByWorkflowRunIdOrderByCreatedAtAsc(UUID workflowRunId);
+
+    default List<TaskRun> findByWorkflowRunId(UUID workflowRunId) {
+        return findByWorkflowRunIdOrderByCreatedAtAsc(workflowRunId);
+    }
 
     List<TaskRun> findByWorkflowRunIdAndStatus(UUID workflowRunId, TaskStatus status);
 
@@ -35,6 +40,32 @@ public interface TaskRunRepository extends JpaRepository<TaskRun, UUID> {
             """, nativeQuery = true)
     Optional<TaskRun> claimNextReadyTask(@Param("now") Instant now);
 
-    @Query("SELECT t FROM TaskRun t WHERE t.status = 'RUNNING' AND t.leaseExpiresAt < :now")
-    List<TaskRun> findExpiredLeases(@Param("now") Instant now);
+    /**
+     * Expired leases, locked the same way as leasing so that several
+     * control-plane replicas running the reaper never reclaim the same task
+     * twice in one sweep.
+     */
+    @Query(value = """
+            SELECT * FROM task_runs
+            WHERE status = 'RUNNING' AND lease_expires_at < :now
+            ORDER BY lease_expires_at
+            LIMIT :limit
+            FOR UPDATE SKIP LOCKED
+            """, nativeQuery = true)
+    List<TaskRun> claimExpiredLeases(@Param("now") Instant now, @Param("limit") int limit);
+
+    /** Per-run task status counts for run listings, in one query. */
+    @Query("""
+            SELECT t.workflowRunId AS runId, t.status AS status, COUNT(t) AS total
+            FROM TaskRun t
+            WHERE t.workflowRunId IN :runIds
+            GROUP BY t.workflowRunId, t.status
+            """)
+    List<StatusCount> countByRunAndStatus(@Param("runIds") Collection<UUID> runIds);
+
+    interface StatusCount {
+        UUID getRunId();
+        TaskStatus getStatus();
+        long getTotal();
+    }
 }

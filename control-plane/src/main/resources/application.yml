@@ -28,6 +28,9 @@ flowforge:
     retry-backoff-seconds: ${RETRY_BACKOFF_SECONDS:5}
     default-task-timeout-seconds: ${DEFAULT_TASK_TIMEOUT_SECONDS:60}
     default-max-retries: ${DEFAULT_MAX_RETRIES:3}
+  cors:
+    # Comma-separated origins allowed to call /api/** (supports patterns like https://*.vercel.app).
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
 
 management:
   endpoints:

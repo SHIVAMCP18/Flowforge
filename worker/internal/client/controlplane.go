@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,14 +12,19 @@ import (
 
 // TaskLease mirrors control-plane's TaskLeaseResponse DTO.
 type TaskLease struct {
-	TaskRunID          string            `json:"taskRunId"`
-	WorkflowRunID      string            `json:"workflowRunId"`
-	TaskName           string            `json:"taskName"`
-	Command            string            `json:"command"`
-	TimeoutSeconds     int               `json:"timeoutSeconds"`
-	Attempt            int               `json:"attempt"`
+	TaskRunID           string            `json:"taskRunId"`
+	WorkflowRunID       string            `json:"workflowRunId"`
+	TaskName            string            `json:"taskName"`
+	Command             string            `json:"command"`
+	TimeoutSeconds      int               `json:"timeoutSeconds"`
+	Attempt             int               `json:"attempt"`
 	UpstreamCheckpoints map[string]string `json:"upstreamCheckpoints"`
 }
+
+// ErrLeaseLost means the control plane no longer considers this worker the
+// owner of the task (the lease expired and was reclaimed, or the run was
+// cancelled). The result is discarded; there is nothing to retry.
+var ErrLeaseLost = errors.New("lease no longer held")
 
 type ControlPlaneClient struct {
 	BaseURL string
@@ -59,31 +65,28 @@ func (c *ControlPlaneClient) LeaseTask(workerID string) (*TaskLease, error) {
 }
 
 func (c *ControlPlaneClient) CompleteTask(taskRunID, checkpointData string) error {
-	payload, _ := json.Marshal(map[string]string{"checkpointData": checkpointData})
-	url := fmt.Sprintf("%s/api/tasks/%s/complete", c.BaseURL, taskRunID)
-	resp, err := c.HTTP.Post(url, "application/json", bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("complete callback failed: %s: %s", resp.Status, string(body))
-	}
-	return nil
+	return c.report(taskRunID, "complete", map[string]string{"checkpointData": checkpointData})
 }
 
 func (c *ControlPlaneClient) FailTask(taskRunID, errorMessage string) error {
-	payload, _ := json.Marshal(map[string]string{"errorMessage": errorMessage})
-	url := fmt.Sprintf("%s/api/tasks/%s/fail", c.BaseURL, taskRunID)
+	return c.report(taskRunID, "fail", map[string]string{"errorMessage": errorMessage})
+}
+
+func (c *ControlPlaneClient) report(taskRunID, action string, body map[string]string) error {
+	payload, _ := json.Marshal(body)
+	url := fmt.Sprintf("%s/api/tasks/%s/%s", c.BaseURL, taskRunID, action)
 	resp, err := c.HTTP.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict {
+		msg, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%w: %s", ErrLeaseLost, string(msg))
+	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("fail callback failed: %s: %s", resp.Status, string(body))
+		msg, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%s callback failed: %s: %s", action, resp.Status, string(msg))
 	}
 	return nil
 }

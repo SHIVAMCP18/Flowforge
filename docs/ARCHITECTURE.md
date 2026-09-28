@@ -107,12 +107,39 @@ When a task permanently fails, `cascadeSkip` marks every remaining
 `PENDING`/`READY` task in that run as `SKIPPED` (they can never satisfy
 their dependency now) and the workflow run is marked `FAILED`.
 
+The reaper claims expired leases with the same `FOR UPDATE SKIP LOCKED`
+pattern as leasing, so several control-plane replicas can run it
+concurrently without reclaiming the same task twice.
+
+### Stale callbacks
+
+A worker whose lease was reclaimed may still finish later and call
+`/complete` or `/fail`. Accepting that report would overwrite the state of
+the newer attempt, so both endpoints only act on tasks that are still
+`RUNNING` and otherwise answer `409 Conflict`. The worker treats a 409 as
+"lease lost" and discards the result.
+
+## Cancel and resume
+
+`POST /api/workflows/runs/{id}/cancel` moves every unfinished task to
+`CANCELLED` and the run to `CANCELLED`; a worker that is mid-task gets a 409
+when it reports back.
+
+`POST /api/workflows/runs/{id}/retry` resumes a `FAILED` or `CANCELLED`
+run. Tasks that already `SUCCEEDED` keep their status and checkpoint output
+and are not re-executed; everything else is reset to `PENDING` with a fresh
+attempt budget and promoted to `READY` as its dependencies allow. This is
+the practical payoff of durable checkpoints: a failure at the end of a long
+pipeline doesn't mean redoing the expensive early stages.
+
 ## Checkpointing
 
 Each task's `checkpoint_data` column holds whatever output it produced,
 persisted at the moment of success — nothing is held only in worker memory.
 This does two things: it's the mechanism by which task N+1 receives task N's
-output (passed back in the lease response's `upstreamCheckpoints` map), and
+output (passed back in the lease response's `upstreamCheckpoints` map, which
+the worker exposes to the command as `FLOWFORGE_UPSTREAM_<TASK>` and
+`FLOWFORGE_UPSTREAM_JSON` environment variables), and
 it means a workflow run's full execution trace is durable and inspectable
 via `GET /api/workflows/runs/{id}` even long after the run finishes.
 

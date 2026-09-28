@@ -7,20 +7,24 @@ import com.flowforge.controlplane.domain.TaskRun;
 import com.flowforge.controlplane.domain.TaskStatus;
 import com.flowforge.controlplane.domain.WorkflowDefinition;
 import com.flowforge.controlplane.domain.WorkflowRun;
+import com.flowforge.controlplane.domain.WorkflowRunStatus;
 import com.flowforge.controlplane.dto.*;
 import com.flowforge.controlplane.repository.TaskRunRepository;
 import com.flowforge.controlplane.repository.WorkflowDefinitionRepository;
 import com.flowforge.controlplane.repository.WorkflowRunRepository;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 public class WorkflowService {
+
+    private static final int MAX_RUN_PAGE = 200;
 
     private final WorkflowDefinitionRepository definitionRepo;
     private final WorkflowRunRepository runRepo;
@@ -66,11 +70,24 @@ public class WorkflowService {
         return new WorkflowDefinitionResponse(def.getId(), def.getName(), def.getVersion());
     }
 
+    /** Dry-run validation: checks the DAG and returns its execution plan without persisting anything. */
+    public DagValidationResponse validate(WorkflowDefinitionRequest request) {
+        return dagValidator.validate(request.getTasks());
+    }
+
+    @Transactional(readOnly = true)
+    public List<WorkflowDefinitionView> listDefinitions() {
+        return definitionRepo.findAllByOrderByCreatedAtDesc().stream().map(this::toView).toList();
+    }
+
+    @Transactional(readOnly = true)
+    public WorkflowDefinitionView getDefinition(UUID definitionId) {
+        return toView(requireDefinition(definitionId));
+    }
+
     @Transactional
     public WorkflowRunView startRun(UUID definitionId) {
-        WorkflowDefinition def = definitionRepo.findById(definitionId)
-                .orElseThrow(() -> new NoSuchElementException("Unknown workflow definition: " + definitionId));
-
+        WorkflowDefinition def = requireDefinition(definitionId);
         List<TaskSpec> tasks = readTaskSpecs(def.getDagJson());
 
         WorkflowRun run = new WorkflowRun();
@@ -92,8 +109,55 @@ public class WorkflowService {
         return schedulerService.getRunView(run.getId());
     }
 
+    @Transactional(readOnly = true)
     public WorkflowRunView getRun(UUID runId) {
         return schedulerService.getRunView(runId);
+    }
+
+    /** Most recent runs first, optionally filtered by status and/or definition. */
+    @Transactional(readOnly = true)
+    public List<WorkflowRunSummary> listRuns(String status, UUID definitionId, int limit) {
+        WorkflowRunStatus statusFilter = null;
+        if (status != null && !status.isBlank()) {
+            try {
+                statusFilter = WorkflowRunStatus.valueOf(status.trim().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Unknown run status '" + status + "'. Expected one of "
+                        + Arrays.toString(WorkflowRunStatus.values()));
+            }
+        }
+        int pageSize = Math.max(1, Math.min(limit, MAX_RUN_PAGE));
+        List<WorkflowRun> runs = runRepo.findRecent(statusFilter, definitionId, PageRequest.of(0, pageSize));
+        if (runs.isEmpty()) return List.of();
+
+        Set<UUID> runIds = runs.stream().map(WorkflowRun::getId).collect(Collectors.toSet());
+        Map<UUID, Map<String, Long>> counts = new HashMap<>();
+        for (TaskRunRepository.StatusCount c : taskRunRepo.countByRunAndStatus(runIds)) {
+            counts.computeIfAbsent(c.getRunId(), k -> new TreeMap<>()).put(c.getStatus().name(), c.getTotal());
+        }
+
+        Set<UUID> definitionIds = runs.stream().map(WorkflowRun::getWorkflowDefinitionId).collect(Collectors.toSet());
+        Map<UUID, WorkflowDefinition> definitions = definitionRepo.findAllById(definitionIds).stream()
+                .collect(Collectors.toMap(WorkflowDefinition::getId, Function.identity()));
+
+        return runs.stream().map(run -> {
+            Map<String, Long> taskCounts = counts.getOrDefault(run.getId(), Map.of());
+            WorkflowDefinition def = definitions.get(run.getWorkflowDefinitionId());
+            int total = (int) taskCounts.values().stream().mapToLong(Long::longValue).sum();
+            return new WorkflowRunSummary(run.getId(), run.getWorkflowDefinitionId(),
+                    def != null ? def.getName() : null, def != null ? def.getVersion() : 0,
+                    run.getStatus().name(), run.getStartedAt(), run.getCompletedAt(), total, taskCounts);
+        }).toList();
+    }
+
+    private WorkflowDefinition requireDefinition(UUID definitionId) {
+        return definitionRepo.findById(definitionId)
+                .orElseThrow(() -> new NoSuchElementException("Unknown workflow definition: " + definitionId));
+    }
+
+    private WorkflowDefinitionView toView(WorkflowDefinition def) {
+        return new WorkflowDefinitionView(def.getId(), def.getName(), def.getVersion(), def.getCreatedAt(),
+                readTaskSpecs(def.getDagJson()));
     }
 
     private String writeJson(Object value) {

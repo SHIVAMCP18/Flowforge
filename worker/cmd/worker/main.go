@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -43,7 +45,7 @@ func runLoop(ctx context.Context, cp *client.ControlPlaneClient, cfg config.Conf
 	pollInterval := time.Duration(cfg.PollIntervalMs) * time.Millisecond
 	workerID := cfg.WorkerID
 	if cfg.PoolSize > 1 {
-		workerID = cfg.WorkerID + "-" + itoa(slot)
+		workerID = cfg.WorkerID + "-" + strconv.Itoa(slot)
 	}
 
 	for {
@@ -65,7 +67,14 @@ func runLoop(ctx context.Context, cp *client.ControlPlaneClient, cfg config.Conf
 		}
 
 		log.Printf("[%s] leased task=%s attempt=%d timeout=%ds", workerID, lease.TaskName, lease.Attempt, lease.TimeoutSeconds)
-		result := executor.Run(lease.Command, lease.TimeoutSeconds)
+		result := executor.Run(lease.Command, lease.TimeoutSeconds, executor.Context{
+			WorkflowRunID:       lease.WorkflowRunID,
+			TaskRunID:           lease.TaskRunID,
+			TaskName:            lease.TaskName,
+			WorkerID:            workerID,
+			Attempt:             lease.Attempt,
+			UpstreamCheckpoints: lease.UpstreamCheckpoints,
+		})
 
 		if result.Err != nil {
 			msg := result.Err.Error()
@@ -73,17 +82,17 @@ func runLoop(ctx context.Context, cp *client.ControlPlaneClient, cfg config.Conf
 				msg = msg + ": " + result.Output
 			}
 			if err := cp.FailTask(lease.TaskRunID, msg); err != nil {
-				log.Printf("[%s] failed to report failure: %v", workerID, err)
+				logCallbackError(workerID, lease.TaskName, "failure", err)
 			}
-			log.Printf("[%s] task=%s failed: %v", workerID, lease.TaskName, result.Err)
+			log.Printf("[%s] task=%s failed after %s: %v", workerID, lease.TaskName, result.Duration.Round(time.Millisecond), result.Err)
 			continue
 		}
 
 		if err := cp.CompleteTask(lease.TaskRunID, result.Output); err != nil {
-			log.Printf("[%s] failed to report completion: %v", workerID, err)
+			logCallbackError(workerID, lease.TaskName, "completion", err)
 			continue
 		}
-		log.Printf("[%s] task=%s succeeded", workerID, lease.TaskName)
+		log.Printf("[%s] task=%s succeeded in %s", workerID, lease.TaskName, result.Duration.Round(time.Millisecond))
 	}
 }
 
@@ -96,21 +105,10 @@ func sleep(ctx context.Context, d time.Duration) {
 	}
 }
 
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
+func logCallbackError(workerID, taskName, kind string, err error) {
+	if errors.Is(err, client.ErrLeaseLost) {
+		log.Printf("[%s] task=%s %s discarded: lease was reclaimed or run cancelled", workerID, taskName, kind)
+		return
 	}
-	digits := []byte{}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	for n > 0 {
-		digits = append([]byte{byte('0' + n%10)}, digits...)
-		n /= 10
-	}
-	if neg {
-		return "-" + string(digits)
-	}
-	return string(digits)
+	log.Printf("[%s] task=%s failed to report %s: %v", workerID, taskName, kind, err)
 }

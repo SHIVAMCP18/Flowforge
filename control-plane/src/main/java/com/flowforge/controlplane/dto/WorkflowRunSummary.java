@@ -1,10 +1,11 @@
 package com.flowforge.controlplane.dto;
 
 import java.time.Instant;
-import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
-public record WorkflowRunView(
+/** Lightweight row for run listings: no per-task payloads, just status counts. */
+public record WorkflowRunSummary(
         UUID id,
         UUID workflowDefinitionId,
         String workflowName,
@@ -12,5 +13,6 @@ public record WorkflowRunView(
         String status,
         Instant startedAt,
         Instant completedAt,
-        List<TaskRunView> tasks
+        int totalTasks,
+        Map<String, Long> taskCounts
 ) {}

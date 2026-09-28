@@ -13,7 +13,7 @@ public class TaskSpec {
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
     public List<String> getDependsOn() { return dependsOn; }
-    public void setDependsOn(List<String> dependsOn) { this.dependsOn = dependsOn; }
+    public void setDependsOn(List<String> dependsOn) { this.dependsOn = dependsOn != null ? dependsOn : List.of(); }
     public String getCommand() { return command; }
     public void setCommand(String command) { this.command = command; }
     public Integer getTimeoutSeconds() { return timeoutSeconds; }
