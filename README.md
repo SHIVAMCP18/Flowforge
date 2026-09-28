@@ -1,5 +1,9 @@
 # FlowForge
 
+**Live demo:** [flowforge-eosin.vercel.app](https://flowforge-eosin.vercel.app/) — the dashboard
+runs an in-browser simulation of the scheduler and worker pool, so you can build, run, cancel
+and resume workflows without deploying the backend.
+
 A distributed workflow orchestration engine: define multi-step jobs as a
 DAG of tasks with explicit dependencies, and FlowForge schedules,
 retries, times out, and checkpoints them across a horizontally-scalable
