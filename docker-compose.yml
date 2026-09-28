@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: flowforge
+      POSTGRES_USER: flowforge
+      POSTGRES_PASSWORD: flowforge
+    ports:
+      - "5432:5432"
+    volumes:
+      - flowforge-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  control-plane:
+    build: ./control-plane
+    ports:
+      - "8080:8080"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: flowforge
+      DB_USER: flowforge
+      DB_PASSWORD: flowforge
+      REAPER_INTERVAL_MS: 5000
+      RETRY_BACKOFF_SECONDS: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build: ./worker
+    environment:
+      CONTROL_PLANE_URL: http://control-plane:8080
+      POOL_SIZE: 4
+      POLL_INTERVAL_MS: 500
+    depends_on:
+      - control-plane
+    # Scale the worker fleet horizontally for local load testing:
+    #   docker compose up --scale worker=5
+
+volumes:
+  flowforge-pgdata:

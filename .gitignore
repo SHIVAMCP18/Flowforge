@@ -1,0 +1,22 @@
+.DS_Store
+
+# Maven
+target/
+*.jar
+*.war
+*.ear
+*.class
+
+# Go
+worker/worker
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Node
+node_modules/
+dist/
+.env.local
+.env.*.local
